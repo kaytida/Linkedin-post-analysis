@@ -166,34 +166,6 @@ def chart_agreement(df: pd.DataFrame, show: bool) -> Path:
     return _save(fig, "01_agreement.png", show)
 
 
-def chart_consensus_pie(df: pd.DataFrame, show: bool) -> Path:
-    """Pie: definitely human / might be AI / definitely AI."""
-    order = ["Definitely human", "Might be AI", "Definitely AI"]
-    counts = df["consensus"].value_counts()
-    labels = [o for o in order if o in counts.index]
-    values = [int(counts[o]) for o in labels]
-    colors = {
-        "Definitely human": _COLORS["def_human"],
-        "Might be AI": _COLORS["might_ai"],
-        "Definitely AI": _COLORS["def_ai"],
-    }
-
-    fig, ax = plt.subplots(figsize=(7, 6))
-    wedges, texts, autotexts = ax.pie(
-        values,
-        labels=labels,
-        colors=[colors[l] for l in labels],
-        autopct=lambda p: f"{p:.1f}%\n({int(round(p * len(df) / 100))})",
-        startangle=90,
-        wedgeprops={"linewidth": 1.2, "edgecolor": "white"},
-        textprops={"fontsize": 11},
-    )
-    for t in autotexts:
-        t.set_fontsize(9)
-    ax.set_title("Consensus: how sure are both models?", fontsize=14, pad=14)
-    return _save(fig, "02_consensus_pie.png", show)
-
-
 def chart_verdicts_side_by_side(df: pd.DataFrame, show: bool) -> Path:
     """Grouped bars of each detector's AI / Human / Mixed counts."""
     a = df["detector_a"].iloc[0]
@@ -221,7 +193,7 @@ def chart_verdicts_side_by_side(df: pd.DataFrame, show: bool) -> Path:
     for i, (va, vb) in enumerate(zip(ya, yb)):
         ax.text(i - width / 2, va, str(va), ha="center", va="bottom", fontsize=8)
         ax.text(i + width / 2, vb, str(vb), ha="center", va="bottom", fontsize=8)
-    return _save(fig, "03_verdicts_by_detector.png", show)
+    return _save(fig, "02_verdicts_by_detector.png", show)
 
 
 def chart_score_scatter(df: pd.DataFrame, show: bool) -> Path:
@@ -254,7 +226,7 @@ def chart_score_scatter(df: pd.DataFrame, show: bool) -> Path:
     ax.set_aspect("equal")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    return _save(fig, "04_score_scatter.png", show)
+    return _save(fig, "03_score_scatter.png", show)
 
 
 def chart_pct_ai_hist(df: pd.DataFrame, show: bool) -> Path:
@@ -275,7 +247,7 @@ def chart_pct_ai_hist(df: pd.DataFrame, show: bool) -> Path:
     ax.legend(frameon=False, fontsize=8)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    return _save(fig, "05_pct_ai_distribution.png", show)
+    return _save(fig, "04_pct_ai_distribution.png", show)
 
 
 def chart_by_keyword(df: pd.DataFrame, show: bool) -> Path:
@@ -304,7 +276,7 @@ def chart_by_keyword(df: pd.DataFrame, show: bool) -> Path:
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     plt.setp(ax.get_xticklabels(), rotation=15, ha="right")
-    return _save(fig, "06_consensus_by_keyword.png", show)
+    return _save(fig, "05_consensus_by_keyword.png", show)
 
 
 def chart_agreement_matrix(df: pd.DataFrame, show: bool) -> Path:
@@ -333,7 +305,7 @@ def chart_agreement_matrix(df: pd.DataFrame, show: bool) -> Path:
                     color="white" if val > mat.values.max() * 0.55 else "#222",
                     fontsize=11, fontweight="bold")
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    return _save(fig, "07_verdict_matrix.png", show)
+    return _save(fig, "06_verdict_matrix.png", show)
 
 
 def print_report(df: pd.DataFrame) -> None:
@@ -401,7 +373,6 @@ def main() -> int:
 
     print("Building charts ...", flush=True)
     chart_agreement(comparison, args.show)
-    chart_consensus_pie(comparison, args.show)
     chart_verdicts_side_by_side(comparison, args.show)
     chart_score_scatter(comparison, args.show)
     chart_pct_ai_hist(comparison, args.show)

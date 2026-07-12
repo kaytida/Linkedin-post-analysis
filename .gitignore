@@ -1,0 +1,21 @@
+# Secrets - config.py now holds the Apify API token inline, do NOT commit it.
+.env
+config.py
+
+# Data outputs
+data/*.csv
+data/*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# HF model cache (if set locally)
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db

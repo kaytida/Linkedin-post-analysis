@@ -1,0 +1,12 @@
+# Scraping
+apify-client==3.0.5
+
+# Data handling
+pandas==2.2.3
+matplotlib==3.9.2
+
+# Pretrained AI-text detectors (Hugging Face)
+transformers==4.46.3
+torch==2.5.1
+# torch on CPU-only machines: if the line above fails, install with
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu

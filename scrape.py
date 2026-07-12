@@ -1,17 +1,15 @@
 """Scrape LinkedIn posts via Apify and save a clean CSV.
 
 Usage:
-    python scrape.py                 # uses .env defaults
+    python scrape.py                 # uses config.py defaults
     python scrape.py --keywords "ai,startup" --total 1000
     python scrape.py --actor harvestapi/linkedin-post-search
 
-The script:
-  1. Runs the configured Apify actor once per keyword, dividing the total
-     post budget evenly across keywords.
-  2. Streams every returned item to `data/raw_posts.jsonl` immediately, so
-     nothing is lost if the run is interrupted.
-  3. De-duplicates by post URL, then writes a normalised `data/posts.csv`
-     with the fields we care about for downstream analysis.
+What it does:
+  1. Runs the Apify actor once per keyword, splitting the post budget evenly.
+  2. Streams every returned item to data/raw_posts.jsonl as it arrives, so an
+     interrupted run keeps what it already fetched.
+  3. De-duplicates by post URL and writes a normalised data/posts.csv.
 """
 from __future__ import annotations
 
@@ -26,7 +24,6 @@ from apify_client import ApifyClient
 import config
 
 
-# --- CLI -------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Scrape LinkedIn posts via Apify.")
     p.add_argument("--keywords", default=None,
@@ -40,12 +37,11 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-# --- Apify wrapper ---------------------------------------------------------
 def run_actor(client: ApifyClient, actor_id: str, run_input: dict) -> Iterable[dict]:
-    """Run an actor synchronously and yield each dataset item.
+    """Run an actor and yield each dataset item.
 
-    apify-client >= 3 returns a pydantic `Run` model (attribute access /
-    snake_case). Older clients returned a plain dict (`.get` / camelCase).
+    apify-client >= 3 returns a pydantic Run model (snake_case attributes);
+    older clients returned a plain dict (camelCase keys). Handle both.
     """
     print(f"  -> starting actor '{actor_id}' with {run_input}")
     run = client.actor(actor_id).call(run_input=run_input)
@@ -68,24 +64,23 @@ def run_actor(client: ApifyClient, actor_id: str, run_input: dict) -> Iterable[d
 
 
 def build_input(keyword: str, per_keyword: int, sort_type: str) -> dict:
-    """Input for harvestapi/linkedin-post-search.
+    """Build input for harvestapi/linkedin-post-search.
 
-    Docs: https://apify.com/harvestapi/linkedin-post-search
     sortBy accepts 'relevance' or 'date' (newest first).
+    Docs: https://apify.com/harvestapi/linkedin-post-search
     """
     sort_by = "date" if sort_type in ("date_posted", "date") else "relevance"
     return {
         "searchQueries": [keyword],
         "maxPosts": per_keyword,
         "sortBy": sort_by,
-        # Keep reactions/comments off so we only pay for posts.
+        # Skip reactions/comments so we only pay for posts.
         "scrapeReactions": False,
         "scrapeComments": False,
     }
 
 
-# --- Normalisation ---------------------------------------------------------
-# Flat fields (legacy actors) + nested harvestapi shapes.
+# Field name candidates: flat (legacy actors) and nested (harvestapi).
 POST_TEXT_FIELDS = ("text", "postText", "content", "description", "post_content")
 POST_URL_FIELDS = ("linkedinUrl", "url", "postUrl", "post_url", "link")
 
@@ -169,13 +164,12 @@ def normalise(item: dict, keyword: str) -> dict | None:
     }
 
 
-# --- Main ------------------------------------------------------------------
 def main() -> int:
     args = parse_args()
 
     token = config.APIFY_API_TOKEN
     if not token:
-        print("ERROR: APIFY_API_TOKEN missing. Copy .env.example -> .env and set it.",
+        print("ERROR: APIFY_API_TOKEN missing. Set it in config.py.",
               file=sys.stderr)
         return 2
 
@@ -223,7 +217,7 @@ def main() -> int:
                     got_here += 1
                     if got_here >= per_keyword:
                         break
-            except Exception as e:  # keep partial results
+            except Exception as e:  # keep whatever we already collected
                 print(f"  !! actor call failed for {kw!r}: {e}", file=sys.stderr)
             print(f"  <- collected {got_here} usable posts for {kw!r} "
                   f"(running total: {len(collected)})")

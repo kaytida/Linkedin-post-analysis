@@ -1,26 +1,23 @@
-"""Detect AI vs human authorship in the scraped LinkedIn posts.
+"""Score each scraped LinkedIn post for AI vs human authorship.
 
-Supports multiple detector *types* through a common `Scorer` interface:
+Detectors share a common `Scorer` interface and come in three types:
 
-    * statistical   - pure stylometric metrics (no neural model): lexical
-      diversity, sentence/word burstiness, punctuation, repetition, entropy.
-    * hf_classifier - a fine-tuned text-classification model from Hugging Face
-      (e.g. RoBERTa / BERT detectors like `Hello-SimpleAI/chatgpt-detector-roberta`).
-    * zero_shot_lm  - optional base causal LM used for GLTR-style top-k rank +
-      burstiness scoring (e.g. `distilgpt2`).
+    statistical   - style metrics only, no model (lexical diversity,
+                    burstiness, punctuation, repetition, phrase density).
+    hf_classifier - a fine-tuned Hugging Face text classifier (RoBERTa/BERT).
+    zero_shot_lm  - a base causal LM scored GLTR-style (top-k rank + burstiness).
 
-For each post we compute, per detector:
-    * `p_ai_full`   - detector probability the *whole post* is AI-written.
-    * `pct_ai`      - character-weighted % of sentences flagged as AI.
-    * `verdict`     - "AI" / "Human" / "Mixed" based on `pct_ai`.
+Per post, per detector, we record:
+    p_ai_full - probability the whole post is AI-written.
+    pct_ai    - character-weighted % of sentences flagged as AI.
+    verdict   - "AI" / "Human" / "Mixed", derived from pct_ai.
 
-Results are written to one CSV per detector (`data/analysis_<name>.csv`)
-and an aggregate `data/summary.csv`.
+Output: one CSV per detector (data/analysis_<name>.csv) plus data/summary.csv.
 
 Usage:
-    python analyze.py                       # analyse everything in posts.csv
-    python analyze.py --limit 50            # dry-run on first 50 posts
-    python analyze.py --detector fakespot_roberta  # single detector only
+    python analyze.py                              # all posts, all detectors
+    python analyze.py --limit 50                   # quick run on first 50
+    python analyze.py --detector fakespot_roberta  # one detector only
 """
 from __future__ import annotations
 
@@ -35,7 +32,6 @@ import pandas as pd
 import config
 
 
-# --- Small utilities -------------------------------------------------------
 def _cuda_available() -> bool:
     try:
         import torch
@@ -48,13 +44,12 @@ def _clip01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
-# --- Text splitting --------------------------------------------------------
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])|\n+")
 
 
 def split_sentences(text: str) -> list[str]:
-    """Cheap sentence splitter that also treats newlines as breaks (LinkedIn
-    posts love newlines-as-punctuation). Tiny fragments are merged forward."""
+    """Split into sentences, treating newlines as breaks too (LinkedIn posts
+    use them like punctuation). Tiny fragments get merged into the previous."""
     parts = [p.strip() for p in _SENT_SPLIT.split(text or "") if p and p.strip()]
     merged: list[str] = []
     for p in parts:
@@ -65,9 +60,8 @@ def split_sentences(text: str) -> list[str]:
     return merged
 
 
-# --- Scorer interface ------------------------------------------------------
 class Scorer:
-    """Base class. Subclasses implement `score(texts) -> list[float]` returning
+    """Base class. Subclasses implement score(texts) -> list[float], returning
     P(AI) in [0, 1] for each input string."""
 
     name: str = "scorer"
@@ -76,11 +70,10 @@ class Scorer:
         raise NotImplementedError
 
 
-# --- Scorer #1: Statistical stylometry (no neural model) -------------------
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")
 _PUNCT_RE = re.compile(r"[.,;:!?\"'()\[\]{}—–-]")
 
-# Stock LLM / LinkedIn-AI phrasing. Density of these is a strong surface signal.
+# Stock LLM / LinkedIn-AI phrasing. How often these show up is a strong tell.
 _AI_PHRASES = (
     "leverage", "delve", "landscape", "unlock", "transformative",
     "cutting-edge", "cutting edge", "game-changer", "game changer",
@@ -97,21 +90,21 @@ _AI_PHRASES = (
 
 
 class StatisticalScorer(Scorer):
-    """Pure statistical AI-signal scorer. No model weights, no GPU.
+    """Style-based AI scorer. No model weights, no GPU.
 
-    Features (each mapped to P(AI) via calibration anchors, then averaged):
+    Each feature is mapped to P(AI) via calibration anchors, then averaged:
 
-      * `herdan_c`         - length-stable lexical diversity: log(types)/log(tokens).
-        Raw TTR collapses on short LinkedIn posts; Herdan's C does not.
-      * `hapax_ratio`      - share of words that appear exactly once.
-      * `sent_len_cv`      - CV of sentence lengths (humans are burstier).
-      * `avg_sent_len`     - mean words/sentence (AI LinkedIn posts run long).
-      * `punct_ratio`      - punctuation chars / total chars.
-      * `bigram_repeat`    - fraction of word-bigrams that appear >1 time.
-      * `ai_phrase_density`- hits of stock LLM/LinkedIn-AI phrases per 100 words.
+      herdan_c          - lexical diversity, log(types)/log(tokens). Unlike raw
+                          TTR, this stays stable on short posts.
+      hapax_ratio       - share of words that appear exactly once.
+      sent_len_cv       - variation in sentence length (humans are burstier).
+      avg_sent_len      - mean words per sentence (AI posts run long).
+      punct_ratio       - punctuation chars / total chars.
+      bigram_repeat     - fraction of word-bigrams seen more than once.
+      ai_phrase_density - stock LLM/LinkedIn-AI phrases per 100 words.
 
-    Calibration anchors live in `cfg["calibration"]`. Each feature has
-    `*_human` / `*_ai` endpoints; direction is inferred automatically.
+    Anchors live in cfg["calibration"] as *_human / *_ai endpoints; the
+    direction of each feature is inferred from them.
     """
 
     FEATURES = (
@@ -135,9 +128,9 @@ class StatisticalScorer(Scorer):
                     if f"{f}_human" in self.cal and f"{f}_ai" in self.cal)
             w = 1.0 / max(1, n)
             self.weights = {f: w for f in self.FEATURES}
-        # Optional post-average stretch. LinkedIn feature means sit in a
-        # narrow mid band; without this, soft sentence averages pile up
-        # around ~30% and almost everything becomes "Mixed".
+        # Optional post-average stretch. LinkedIn feature means sit in a narrow
+        # mid band, so without this most posts pile up around 30% and get
+        # labelled "Mixed".
         stretch = cfg.get("score_stretch") or {}
         self.stretch_lo = float(stretch["lo"]) if "lo" in stretch else None
         self.stretch_hi = float(stretch["hi"]) if "hi" in stretch else None
@@ -174,7 +167,7 @@ class StatisticalScorer(Scorer):
         types = len(counts)
         hapax = sum(1 for c in counts.values() if c == 1)
 
-        # Herdan's C = log(V) / log(N): stable across short vs long posts.
+        # Herdan's C = log(types) / log(tokens).
         herdan_c = (math.log(types) / math.log(n)) if n > 1 and types > 1 else 1.0
 
         sents = split_sentences(text) or [text]
@@ -247,11 +240,12 @@ class StatisticalScorer(Scorer):
 
 
 def _configure_hf_download() -> None:
-    """Corporate networks often MITM HTTPS with a self-signed proxy cert, which
-    breaks Hugging Face model downloads. Apply config knobs *before* loading
-    any HF model. Must use `configure_http_backend` — patching
-    `ssl._create_default_https_context` alone is not enough because
-    `huggingface_hub` builds its own requests Session."""
+    """Apply Hugging Face download settings before loading any model.
+
+    Corporate proxies that MITM HTTPS with a self-signed cert break HF
+    downloads. Patching ssl alone isn't enough — huggingface_hub builds its
+    own requests Session, so we also override its HTTP backend.
+    """
     import os
 
     if getattr(config, "HF_HUB_DISABLE_XET", True):
@@ -283,10 +277,9 @@ def _configure_hf_download() -> None:
         print(f"  warning: could not patch HF HTTP backend: {e}", flush=True)
 
 
-# --- Scorer #2: Hugging Face fine-tuned classifier (RoBERTa / BERT) --------
 class HFClassifierScorer(Scorer):
-    """Wraps a `transformers` text-classification pipeline. Sums the probabilities
-    of all labels whose name matches any `ai_label_keywords` substring."""
+    """Wraps a transformers text-classification pipeline. P(AI) is the summed
+    probability of every label matching an `ai_label_keywords` substring."""
 
     def __init__(self, cfg: dict):
         _configure_hf_download()
@@ -336,7 +329,7 @@ class HFClassifierScorer(Scorer):
             return []
         n = len(texts)
         bs = max(1, int(config.BATCH_SIZE))
-        # One small call (e.g. a few sentences) — no progress spam.
+        # Small call (a few sentences): run it in one go, skip progress logs.
         if n <= bs:
             return self._probs_from_results(
                 self.clf(texts, batch_size=bs))
@@ -351,19 +344,17 @@ class HFClassifierScorer(Scorer):
         return out
 
 
-# --- Scorer #3: Zero-shot base LM (GLTR + burstiness) ----------------------
 class ZeroShotLMScorer(Scorer):
-    """Scores text with a base causal LM using two well-known signals:
+    """Scores text with a base causal LM using two classic GLTR signals:
 
-      * `top_k_frac` - share of tokens whose true id was in the LM's top-K
-        predictions. AI text lives higher on the model's own distribution,
-        so this fraction is elevated.
-      * `burstiness` - std(per-token NLL) / mean(per-token NLL). Human text
-        alternates between predictable and surprising tokens; AI text is
-        more uniformly predictable, so burstiness drops.
+      top_k_frac - share of tokens whose true id was in the LM's top-K
+                   predictions. AI text sits higher on the model's own
+                   distribution, so this fraction is elevated.
+      burstiness - std / mean of per-token NLL. Humans mix predictable and
+                   surprising tokens; AI is more uniform, so this drops.
 
-    The two features are linearly mapped to P(AI) using anchor points
-    ("human" and "AI") from `cfg["calibration"]`.
+    Both are mapped linearly to P(AI) using human/AI anchors in
+    cfg["calibration"].
     """
 
     def __init__(self, cfg: dict):
@@ -378,7 +369,7 @@ class ZeroShotLMScorer(Scorer):
 
         print(f"  loading base LM: {model_id} ...", flush=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        # GPT-2-family tokenizers lack a pad token; reuse EOS so batching works.
+        # GPT-2 tokenizers have no pad token; reuse EOS so batching works.
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(model_id)
@@ -421,7 +412,7 @@ class ZeroShotLMScorer(Scorer):
 
     def _prob_ai(self, top_k_frac: float, burstiness: float) -> float:
         c = self.cal
-        # Linear interpolation between "human" (=0) and "AI" (=1) anchors.
+        # Interpolate between the human (0) and AI (1) anchors.
         tk = (top_k_frac - c["top_k_frac_human"]) / max(
             1e-8, c["top_k_frac_ai"] - c["top_k_frac_human"])
         bu = (c["burstiness_human"] - burstiness) / max(
@@ -443,7 +434,6 @@ class ZeroShotLMScorer(Scorer):
         return out
 
 
-# --- Scorer factory --------------------------------------------------------
 def make_scorer(cfg: dict) -> Scorer:
     dtype = cfg.get("type", "hf_classifier")
     if dtype == "statistical":
@@ -457,15 +447,10 @@ def make_scorer(cfg: dict) -> Scorer:
         f"Known: statistical, hf_classifier, zero_shot_lm.")
 
 
-# --- Verdict thresholds (edit these to tune AI / Human / Mixed splits) -----
-# A post is "AI" if pct_ai >= *_AI_THRESHOLD, "Human" if pct_ai <= *_HUMAN_THRESHOLD,
-# otherwise "Mixed". Raise AI to flag fewer posts as AI; raise Human to keep
-# more posts as Human. Each detector type has its own pair so you can tune the
-# model classifier and the statistical stylometry independently.
-#
-# A specific detector can still override these from config.py via
-# cfg["verdict_thresholds"] = {"ai": .., "human": ..}, but by default these
-# module constants are the single, easy place to set them.
+# Verdict thresholds: a post is "AI" if pct_ai >= *_AI_THRESHOLD, "Human" if
+# pct_ai <= *_HUMAN_THRESHOLD, else "Mixed". Model classifiers and statistical
+# stylometry get separate pairs so they can be tuned independently. A single
+# detector can override these via cfg["verdict_thresholds"] in config.py.
 
 # Model classifiers (e.g. fakespot_roberta):
 DEFAULT_AI_THRESHOLD = 60.0
@@ -493,7 +478,6 @@ def verdict(pct_ai: float,
     return "Mixed"
 
 
-# --- Main analysis pass ----------------------------------------------------
 def analyse_posts(df: pd.DataFrame, detector_name: str,
                   detector_cfg: dict) -> pd.DataFrame:
     print(f"  building scorer for {detector_name} "
@@ -510,7 +494,7 @@ def analyse_posts(df: pd.DataFrame, detector_name: str,
     texts = df["text"].astype(str).tolist()
     n_posts = len(texts)
     print(f"  scoring whole posts ({n_posts}) ...", flush=True)
-    # Chunk so long HF runs emit progress even before sentence pass.
+    # Chunk so long HF runs report progress before the sentence pass starts.
     chunk = max(25, int(config.BATCH_SIZE) * 2)
     p_ai_full: list[float] = []
     for start in range(0, n_posts, chunk):
@@ -523,10 +507,9 @@ def analyse_posts(df: pd.DataFrame, detector_name: str,
     rows: list[dict] = []
     for i, (_, row) in enumerate(df.iterrows(), 1):
         sents = split_sentences(str(row["text"]))
-        # Only score sentences with enough words to carry signal. Sub-threshold
-        # fragments (one-liners, hashtags, CTAs) can't be featurised by the
-        # statistical scorer and would otherwise be counted as a confident
-        # P(AI)=0 vote, artificially inflating the "Human" share.
+        # Only score sentences long enough to carry signal. Short fragments
+        # (one-liners, hashtags, CTAs) would otherwise count as a confident
+        # P(AI)=0 vote and inflate the "Human" share.
         scoreable = [s for s in sents
                      if len(s.split()) >= config.MIN_SENTENCE_WORDS]
         if not scoreable:
@@ -538,9 +521,8 @@ def analyse_posts(df: pd.DataFrame, detector_name: str,
                       flush=True)
             sent_probs = scorer.score(scoreable)
             weights = [max(1, len(s)) for s in scoreable]  # char weights
-            # Soft share: character-weighted mean of sentence P(AI). A hard
-            # 0.5 cutoff collapses when a detector's scores sit in a mid band
-            # (common for stylometry), which made pct_ai look stuck at ~0.
+            # Character-weighted mean of sentence P(AI). A hard 0.5 cutoff
+            # collapses when scores sit in a mid band (common for stylometry).
             total_w = sum(weights)
             pct_ai = 100.0 * sum(w * p for w, p in zip(weights, sent_probs)) / total_w
             rows.append({

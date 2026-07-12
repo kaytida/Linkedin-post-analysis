@@ -1,15 +1,15 @@
-"""Cross-check detector outputs and build easy-to-read charts.
+"""Compare detector outputs and build charts.
 
-Reads every `data/analysis_<detector>.csv` produced by `analyze.py`, joins
-them on `post_url`, and writes:
+Reads every data/analysis_<detector>.csv from analyze.py, joins them on
+post_url, and writes:
 
-    * `data/comparison.csv`  - one row per post with both models' scores
-    * `data/charts/*.png`    - agreement, consensus, and supporting figures
-    * a short text report printed to stdout
+    data/comparison.csv - one row per post with each detector's scores
+    data/charts/*.png   - agreement, consensus and supporting figures
+    a short text report to stdout
 
 Usage:
     python summarize.py
-    python summarize.py --show   # also pop open interactive windows
+    python summarize.py --show   # also open interactive windows
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ import pandas as pd
 
 import config
 
-# Friendly display names for the two primary detectors.
+# Friendly display names for the detectors.
 _DISPLAY = {
     "statistical_stylometry": "Statistical stylometry",
     "fakespot_roberta": "Fakespot RoBERTa",
@@ -30,7 +30,7 @@ _DISPLAY = {
     "hc3_chatgpt": "HC3 ChatGPT (RoBERTa)",    # legacy
 }
 
-# Soft colour palette (avoid purple-on-white / neon glow defaults).
+# Muted colour palette (nicer than matplotlib's defaults for these charts).
 _COLORS = {
     "both_ai": "#C45C26",
     "both_human": "#2F6F4E",
@@ -94,8 +94,7 @@ def build_comparison(results: dict[str, pd.DataFrame]) -> pd.DataFrame:
     a, b = names[0], names[1]
     va, vb = f"verdict__{a}", f"verdict__{b}"
 
-    # --- Agreement bucket (chart 1) ----------------------------------------
-    # "Only one AI" = exactly one detector's verdict is AI (Mixed ≠ AI).
+    # Agreement bucket. "Only one AI" = exactly one detector says AI.
     def agreement_row(row: pd.Series) -> str:
         if row[va] == "AI" and row[vb] == "AI":
             return "Both AI"
@@ -109,10 +108,8 @@ def build_comparison(results: dict[str, pd.DataFrame]) -> pd.DataFrame:
 
     merged["agreement"] = merged.apply(agreement_row, axis=1)
 
-    # --- Consensus bucket (chart 2 pie) ------------------------------------
-    # Definitely human  = both say Human
-    # Definitely AI     = both say AI
-    # Might be AI       = anything else (Mixed, split votes, etc.)
+    # Consensus bucket: both Human -> "Definitely human", both AI ->
+    # "Definitely AI", anything else (Mixed, split votes) -> "Might be AI".
     def consensus_row(row: pd.Series) -> str:
         if row[va] == "Human" and row[vb] == "Human":
             return "Definitely human"
